@@ -4,7 +4,7 @@ from pathlib import Path
 from datetime import datetime
 from http.server import ThreadingHTTPServer,BaseHTTPRequestHandler
 from urllib.parse import urlsplit,parse_qs
-import bridge,admin
+import bridge,admin,client_audit
 from http.cookies import SimpleCookie
 PUBLIC=Path(__file__).resolve().parent.parent/'public'
 ORIGIN=os.environ.get('DASHBOARD_ORIGIN','https://property-blue-zeta.vercel.app')
@@ -54,7 +54,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header('Location','index.html?next=followups')
                 self.send_header('Cache-Control','no-store')
                 self.end_headers();return
-            page=bridge.ROOT/'followups.html'
+            page=Path(__file__).resolve().parent/'followups.html'
             if not page.is_file():return self.reply(404,{'error':'Экран ещё не опубликован'})
             body=page.read_bytes();self.send_response(200)
             self.send_header('Content-Type','text/html; charset=utf-8')
@@ -62,6 +62,14 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header('X-Content-Type-Options','nosniff')
             self.send_header('Referrer-Policy','same-origin')
             self.end_headers();return self.wfile.write(body)
+        if path=='/client-audit.js':
+            body=(PUBLIC/'client-audit.js').read_bytes();self.send_response(200)
+            self.send_header('Content-Type','text/javascript; charset=utf-8');self.send_header('Cache-Control','no-store')
+            self.end_headers();return self.wfile.write(body)
+        if path=='/api/client-audit':
+            if not self.auth():return
+            try:return self.reply(200,client_audit.snapshot())
+            except ValueError:return self.reply(404,{'error':'Разбор ещё не загружен'})
         if path=='/api/campaign-preview':
             if not self.auth():return
             campaign=parse_qs(urlsplit(self.path).query).get('id',[''])[0]
@@ -101,6 +109,8 @@ class Handler(BaseHTTPRequestHandler):
                 admin.logout(self.session());return self.reply(200,{'ok':True},self.cookie('',0))
             with (bridge.ROOT/'worker.lock').open('a') as lock:
                 fcntl.flock(lock,fcntl.LOCK_EX)
+                if path=='/api/client-audit-review':return self.reply(200,client_audit.review(data))
+                if path=='/api/client-audit-draft':return self.reply(201,client_audit.draft(data))
                 if path=='/api/campaigns':
                     contacts=data.get('contacts',[])
                     if not isinstance(contacts,list) or not 1<=len(contacts)<=10000: raise ValueError('Нужен список 1–10000 контактов')

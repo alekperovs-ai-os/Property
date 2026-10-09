@@ -91,6 +91,14 @@ def rows(path):
                 yield {name:values.get(col,'') for col,name in header.items()}
     else: raise ValueError('Supported files: .xlsx and .csv')
 
+def normalized_body(body): return ' '.join(body.casefold().split())
+
+def check_duplicate(d,number,body):
+    for r in d.execute("SELECT body FROM messages WHERE phone=? AND state IN ('pending','accepted','uncertain')",(number,)):
+        if normalized_body(r['body'])==normalized_body(body):
+            raise ValueError('Такое сообщение этому клиенту уже есть в очереди или отправлено')
+    if d.execute('SELECT 1 FROM blocked WHERE phone=?',(number,)).fetchone():raise ValueError('Контакт исключён из рассылок')
+
 def create(args):
     if not 1<=args.daily<=30 or not 1<=args.days<=366: raise ValueError('daily: 1–30; days: 1–366')
     start=datetime.fromisoformat(args.start).date() if args.start else now().date()
@@ -108,6 +116,7 @@ def create(args):
     if not batch: raise ValueError('Empty contact list')
     d=db()
     with d:
+        for p,(n,b) in batch.items():check_duplicate(d,p,b)
         d.execute('INSERT INTO campaigns VALUES(?,?,?,?,?)',(args.id,'draft',args.daily,str(start),str(start+timedelta(days=args.days-1))))
         d.executemany('INSERT INTO messages(campaign,phone,name,body) VALUES(?,?,?,?)',[(args.id,p,n,b) for p,(n,b) in batch.items()])
     return {'campaign':args.id,'contacts':len(batch),'capacity':args.daily*args.days,'state':'draft','preview':[(p,n,b) for p,(n,b) in list(batch.items())[:3]]}
@@ -125,13 +134,19 @@ def tick(campaign=None, immediate=False):
     row=d.execute('''SELECT m.* FROM messages m JOIN campaigns c ON c.id=m.campaign
     WHERE (? IS NULL OR c.id=?) AND c.state='active' AND c.start<=? AND c.end>=? AND m.state='pending'
     AND m.phone NOT IN (SELECT phone FROM blocked)
+    AND NOT EXISTS(SELECT 1 FROM messages today WHERE today.phone=m.phone AND substr(today.attempted,1,10)=?)
     AND (SELECT count(*) FROM messages x WHERE x.campaign=c.id AND substr(x.attempted,1,10)=?)<c.daily
-    ORDER BY m.id LIMIT 1''',(campaign,campaign,day,day,day)).fetchone()
+    ORDER BY m.id LIMIT 1''',(campaign,campaign,day,day,day,day)).fetchone()
     if not row: return {'state':'idle'}
     # A crash must pause the entire campaign, not just skip the uncertain contact.
     if d.execute("SELECT 1 FROM messages WHERE campaign=? AND state='uncertain'",(row['campaign'],)).fetchone():
         with d: d.execute("UPDATE campaigns SET state='paused' WHERE id=?",(row['campaign'],))
         return {'state':'uncertain_campaign_paused'}
+    if any(normalized_body(r['body'])==normalized_body(row['body']) for r in d.execute("SELECT body FROM messages WHERE phone=? AND id<>? AND state IN ('accepted','uncertain')",(row['phone'],row['id']))):
+        with d:d.execute("UPDATE campaigns SET state='paused' WHERE id=?",(row['campaign'],))
+        return {'state':'duplicate_campaign_paused'}
+    if d.execute("SELECT 1 FROM messages WHERE phone=? AND substr(attempted,1,10)=?",(row['phone'],day)).fetchone():
+        return {'state':'contact_already_attempted_today'}
     if api('getStateInstance').get('stateInstance')!='authorized': return {'state':'instance_not_authorized'}
     # Commit before network. Crash/timeout remains uncertain and is never auto-retried.
     with d:

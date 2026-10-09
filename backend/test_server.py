@@ -47,17 +47,34 @@ class ServerTests(unittest.TestCase):
   with patch.object(bridge,'now',return_value=datetime(2026,10,9,12,tzinfo=bridge.TZ)),patch.object(bridge,'api') as api:
    self.assertEqual(bridge.tick()['state'],'uncertain_campaign_paused');api.assert_not_called()
  def test_private_followups_require_session(self):
-  (bridge.ROOT/'followups.html').write_text('<html>private-client-test</html>')
+  page=Path(server.__file__).resolve().parent/'followups.html'
+  marker='Клиенты и следующий шаг'
   base='http://127.0.0.1:'+str(self.http.server_port)
   with urllib.request.urlopen(base+'/followups.html') as r:
-   self.assertNotIn('private-client-test',r.read().decode())
+   self.assertNotIn('data-full="true"',r.read().decode())
    self.assertTrue(r.url.endswith('index.html?next=followups'))
   req=urllib.request.Request(base+'/followups.html',headers={'Cookie':'property_session='+self.session})
   with urllib.request.urlopen(req) as r:
    self.assertEqual(r.status,200)
    self.assertEqual(r.headers['Cache-Control'],'no-store')
-   self.assertIn('private-client-test',r.read().decode())
+   self.assertIn('data-full="true"',r.read().decode())
+ def test_private_audit_and_review_draft(self):
+  record={'id':'971501234567@c.us','phone':'971501234567','name':'Anna','category':'candidate','text':'Personal message'}
+  (bridge.ROOT/'client-audit-summary.json').write_text(json.dumps({'records':[record]}))
+  self.assertEqual(self.request('/api/client-audit',key='wrong')[0],401)
+  self.assertEqual(self.request('/api/client-audit-review',{'id':record['id'],'decision':'include','text':'Personal message'})[0],200)
+  self.assertEqual(self.request('/api/client-audit-draft',{})[0],400)
+  code,result=self.request('/api/client-audit-draft',{'checked_replies':True})
+  self.assertEqual(code,201);self.assertEqual(result['state'],'draft')
+  self.assertEqual(self.request('/api/status')[1]['messages'][0]['body'],'Personal message')
+  self.assertEqual(self.request('/api/client-audit-draft',{'checked_replies':True})[0],400)
+ def test_audit_excluded_cannot_be_selected(self):
+  (bridge.ROOT/'client-audit-summary.json').write_text(json.dumps({'records':[{'id':'excluded','category':'excluded'}]}))
+  self.assertEqual(self.request('/api/client-audit-review',{'id':'excluded','decision':'include','text':'Hello'})[0],400)
+ def test_cross_campaign_duplicate_rejected(self):
+  self.draft()
+  self.assertEqual(self.request('/api/campaigns',{'id':'another','text':'hello  Anna','contacts':[{'phone':'+971501234567','name':'Anna'}],'daily':1,'days':1})[0],400)
  def test_duplicate_campaign_does_not_duplicate_messages(self):
-  self.draft();self.assertEqual(self.draft()[0],503)
+  self.draft();self.assertEqual(self.draft()[0],400)
   self.assertEqual(len(self.request('/api/status')[1]['messages']),1)
 if __name__=='__main__': unittest.main()
