@@ -74,6 +74,9 @@ class ServerTests(unittest.TestCase):
  def test_cross_campaign_duplicate_rejected(self):
   self.draft()
   self.assertEqual(self.request('/api/campaigns',{'id':'another','text':'hello  Anna','contacts':[{'phone':'+971501234567','name':'Anna'}],'daily':1,'days':1})[0],400)
+ def test_audit_opt_out_blocks_new_campaign(self):
+  (bridge.ROOT/'client-audit-summary.json').write_text(json.dumps({'records':[{'phone':'971501234567','category':'excluded'}]}))
+  self.assertEqual(self.draft()[0],400)
  def test_duplicate_campaign_does_not_duplicate_messages(self):
   self.draft();self.assertEqual(self.draft()[0],400)
   self.assertEqual(len(self.request('/api/status')[1]['messages']),1)

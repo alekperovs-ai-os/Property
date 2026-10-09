@@ -93,7 +93,13 @@ def rows(path):
 
 def normalized_body(body): return ' '.join(body.casefold().split())
 
+def audit_excluded(number):
+    p=ROOT/'client-audit-summary.json'
+    if not p.is_file():return False
+    return any(r.get('phone')==number and r.get('category')=='excluded' for r in json.loads(p.read_text()).get('records',[]))
+
 def check_duplicate(d,number,body):
+    if audit_excluded(number):raise ValueError('Контакт исключён по результатам разбора переписки')
     for r in d.execute("SELECT body FROM messages WHERE phone=? AND state IN ('pending','accepted','uncertain')",(number,)):
         if normalized_body(r['body'])==normalized_body(body):
             raise ValueError('Такое сообщение этому клиенту уже есть в очереди или отправлено')
@@ -142,6 +148,9 @@ def tick(campaign=None, immediate=False):
     if d.execute("SELECT 1 FROM messages WHERE campaign=? AND state='uncertain'",(row['campaign'],)).fetchone():
         with d: d.execute("UPDATE campaigns SET state='paused' WHERE id=?",(row['campaign'],))
         return {'state':'uncertain_campaign_paused'}
+    if audit_excluded(row['phone']):
+        with d:d.execute("UPDATE campaigns SET state='paused' WHERE id=?",(row['campaign'],))
+        return {'state':'contact_excluded_campaign_paused'}
     if any(normalized_body(r['body'])==normalized_body(row['body']) for r in d.execute("SELECT body FROM messages WHERE phone=? AND id<>? AND state IN ('accepted','uncertain')",(row['phone'],row['id']))):
         with d:d.execute("UPDATE campaigns SET state='paused' WHERE id=?",(row['campaign'],))
         return {'state':'duplicate_campaign_paused'}
