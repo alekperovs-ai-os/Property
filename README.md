@@ -29,7 +29,7 @@ CSV/XLSX → черновик → полный предпросмотр → яв
 CLI activate/pause предназначены для одного оператора; для согласованных с worker операций управления используйте API, который берёт общий lock. Создание черновика по CLI транзакционное; запуск tick по CLI также использует lock.
 
 ## API
-GET /api/status — журнал и кампании. POST /api/campaigns — черновик с contacts, text, id, daily, days; возвращает полный preview. POST /api/campaign-state — id, state и confirm:true при активации. POST /api/pause-all — пауза. POST /api/message-status — id локального сообщения. Все /api требуют cookie property_session после входа по email и паролю. Секреты не возвращаются; логирование HTTP отключено. API доступен только через HTTPS reverse proxy.
+GET /api/status — журнал и кампании. POST /api/campaigns — черновик с contacts, text, id, daily, days; возвращает полный preview. POST /api/campaign-state — id, state и confirm:true при активации. POST /api/pause-all — пауза. POST /api/message-status — id локального сообщения. Кроме /api/admin/login и /api/admin/setup, все /api требуют cookie property_session после входа по email и паролю. Секреты не возвращаются; логирование HTTP отключено. API доступен только через HTTPS reverse proxy.
 
 Для первого создания администратора откройте на VPS приватную одноразовую страницу /property/setup/<ADMIN_SETUP_TOKEN>. Задайте email и пароль сами. Пароль хранится только как scrypt-хеш с солью; после создания повторная регистрация закрыта. Сессия хранится в HttpOnly Secure cookie на 7 дней. На сайте Vercel вход выполняется по email и паролю, без ручного ввода API-ключей. На VPS /property/ доступен тот же интерфейс.
 

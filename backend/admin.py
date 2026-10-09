@@ -38,7 +38,7 @@ def login(email,password):
         owner=d.execute('SELECT * FROM owner WHERE id=1').fetchone()
         salt=owner['salt'] if owner else '00'*32
         candidate=password_hash(password,salt)
-        valid=bool(owner) and hmac.compare_digest(owner['email'],str(email).strip().lower()) and hmac.compare_digest(owner['password_hash'],candidate)
+        valid=bool(owner) and hmac.compare_digest(owner['email'].encode(),str(email).strip().lower().encode()) and hmac.compare_digest(owner['password_hash'],candidate)
         if not valid:
             d.execute('INSERT INTO failures VALUES(?)',(now,));d.commit()
             raise ValueError('Неверный email или пароль')

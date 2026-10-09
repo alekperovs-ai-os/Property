@@ -3,7 +3,7 @@ import fcntl,hmac,json,os,tempfile,types
 from pathlib import Path
 from datetime import datetime
 from http.server import ThreadingHTTPServer,BaseHTTPRequestHandler
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit,parse_qs
 import bridge,admin
 from http.cookies import SimpleCookie
 PUBLIC=Path(__file__).resolve().parent.parent/'public'
@@ -48,6 +48,11 @@ class Handler(BaseHTTPRequestHandler):
             body=(PUBLIC/'index.html').read_bytes();self.send_response(200)
             self.send_header('Content-Type','text/html; charset=utf-8');self.send_header('Cache-Control','no-store')
             self.end_headers();return self.wfile.write(body)
+        if path=='/api/campaign-preview':
+            if not self.auth():return
+            campaign=parse_qs(urlsplit(self.path).query).get('id',[''])[0]
+            with bridge.db() as d: rows=[dict(r) for r in d.execute('SELECT name,phone,body,state FROM messages WHERE campaign=? ORDER BY id',(campaign,))]
+            return self.reply(200,{'preview':rows})
         if path!='/api/status': return self.reply(404,{'error':'Not found'})
         if not self.auth(): return
         try:
