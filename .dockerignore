@@ -1,0 +1,9 @@
+.env
+.env.*
+!.env.example
+data/
+**/secrets.json
+**/*.sqlite*
+**/*.lock
+**/*.log
+**/__pycache__/

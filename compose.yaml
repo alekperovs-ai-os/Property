@@ -1,0 +1,29 @@
+services:
+  api:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      GREENAPI_DATA_DIR: /data
+    networks:
+      default:
+      proxy:
+        aliases: [property-api]
+    ports:
+      - "127.0.0.1:8787:8080"
+    volumes:
+      - ./data:/data
+  worker:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      GREENAPI_DATA_DIR: /data
+    command: ["python3", "backend/worker.py"]
+    volumes:
+      - ./data:/data
+
+networks:
+  proxy:
+    external: true
+    name: n8n-net
