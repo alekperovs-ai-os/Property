@@ -30,7 +30,7 @@ def review(data):
 
 def draft(data):
     if data.get('checked_replies') is not True:raise ValueError('Проверьте свежие ответы в WhatsApp')
-    audit=snapshot(); chosen=[r for r in audit['records'] if audit['review'].get(r['id'],{}).get('decision')=='include']
+    audit=snapshot(); chosen=[r for r in audit['records'] if audit['review'].get(r['id'],{}).get('decision')=='include' and not audit['review'].get(r['id'],{}).get('campaign')]
     if not 1<=len(chosen)<=30:raise ValueError('Выберите от 1 до 30 клиентов')
     batch=[]
     for r in chosen:
