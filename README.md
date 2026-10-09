@@ -8,12 +8,12 @@ CSV/XLSX → черновик → полный предпросмотр → яв
 Статусы API acceptance и доставки различаются. Проверка доставки выполняется отдельно по provider_id через getMessage. Входящие и непрочитанные пока не синхронизируются и показаны как недоступные. Журнал интерфейса ограничен последними 500 записями; полная история остаётся в SQLite. Импорт в интерфейсе — строки «номер,имя»; XLSX/CSV доступен через bridge.py.
 
 ## Развёртывание и перенос
-1. В отдельной папке VPS разместить этот исходный код. Скопировать .env.example в .env, задать случайный DASHBOARD_TOKEN не менее 32 символов. Оставить WORKER_ENABLED=0.
+1. В отдельной папке VPS разместить этот исходный код. Скопировать .env.example в .env, задать случайный ADMIN_SETUP_TOKEN не менее 32 символов. Оставить WORKER_ENABLED=0.
 2. Подготовить data/ с владельцем UID 10001 и правами 700. Существующий secrets.json перенести туда по SSH с правами 600, не добавлять в Git.
 3. Перед финальным переносом остановить только службу com.local.greenapi.whatsapp на Mac: `launchctl bootout gui/$(id -u)/com.local.greenapi.whatsapp`. Проверить завершение текущего worker. Сделать согласованный backup через SQLite backup API под worker.lock. Перенести backup как data/queue.sqlite. Не копировать работающий sqlite только файловой командой: WAL может содержать новые записи.
-4. `docker compose up -d --build`. Проверить /healthz и /api/status с Bearer-токеном. Без Bearer должны возвращаться 401, а при отсутствии конфигурации — 503. На VPS нет демонстрационных секретов и истории.
+4. `docker compose up -d --build`. Проверить /healthz и /api/status с cookie-сессией администратора. Без сессии должны возвращаться 401, а при отсутствии конфигурации — 503. На VPS нет демонстрационных секретов и истории.
 5. Добавить отдельный HTTPS-хост в существующий reverse proxy, направить на 127.0.0.1:8787. Не менять существующие CRM-маршруты. В .env задать точный DASHBOARD_ORIGIN сайта Vercel.
-6. Открыть фронт, ввести HTTPS-адрес API и DASHBOARD_TOKEN. GREEN-API токен остаётся на VPS.
+6. Открыть фронт, войти по email и паролю. GREEN-API токен остаётся на VPS.
 7. После проверки числа сообщений, provider_id и отсутствия локального исполнителя включить WORKER_ENABLED=1 и пересоздать контейнеры. Не активировать новые кампании без получателей и текста.
 8. Проверить восстановление после рестарта контейнеров: данные остаются, accepted не отправляется повторно, uncertain не повторяется и ставит кампанию на паузу. Сначала провести эти проверки с подменённым API, затем наблюдать одну явно разрешённую отправку.
 
@@ -29,6 +29,11 @@ CSV/XLSX → черновик → полный предпросмотр → яв
 CLI activate/pause предназначены для одного оператора; для согласованных с worker операций управления используйте API, который берёт общий lock. Создание черновика по CLI транзакционное; запуск tick по CLI также использует lock.
 
 ## API
-GET /api/status — журнал и кампании. POST /api/campaigns — черновик с contacts, text, id, daily, days; возвращает полный preview. POST /api/campaign-state — id, state и confirm:true при активации. POST /api/pause-all — пауза. POST /api/message-status — id локального сообщения. Все /api требуют Authorization: Bearer DASHBOARD_TOKEN. Секреты не возвращаются; логирование HTTP отключено. API доступен только через HTTPS reverse proxy.
+GET /api/status — журнал и кампании. POST /api/campaigns — черновик с contacts, text, id, daily, days; возвращает полный preview. POST /api/campaign-state — id, state и confirm:true при активации. POST /api/pause-all — пауза. POST /api/message-status — id локального сообщения. Все /api требуют cookie property_session после входа по email и паролю. Секреты не возвращаются; логирование HTTP отключено. API доступен только через HTTPS reverse proxy.
+
+Для первого создания администратора откройте на VPS приватную одноразовую страницу /property/setup/<ADMIN_SETUP_TOKEN>. Задайте email и пароль сами. Пароль хранится только как scrypt-хеш с солью; после создания повторная регистрация закрыта. Сессия хранится в HttpOnly Secure cookie на 7 дней. На сайте Vercel вход выполняется по email и паролю, без ручного ввода API-ключей. На VPS /property/ доступен тот же интерфейс.
 
 Проверки: `python3 -m unittest discover -s backend -p 'test_*.py'`. Для установки навыка скопируйте skills/greenapi-campaigns в каталог навыков Codex; исходник не зависит от путей конкретного Mac.
+
+## Размещение
+Исходный код — GitHub alekperovs-ai-os/Property, main. Сайт — https://property-blue-zeta.vercel.app. Приложение на VPS — /opt/property-connect; приватные данные — /opt/property-connect/data. GREEN-API ключ — data/secrets.json; журнал — data/queue.sqlite; аккаунт и сессии — data/admin.sqlite. Ни один из этих файлов не входит в GitHub.

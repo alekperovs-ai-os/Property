@@ -4,26 +4,32 @@ from pathlib import Path
 from datetime import datetime
 from http.server import ThreadingHTTPServer,BaseHTTPRequestHandler
 from urllib.parse import urlsplit
-import bridge
+import bridge,admin
+from http.cookies import SimpleCookie
 PUBLIC=Path(__file__).resolve().parent.parent/'public'
-TOKEN=os.environ.get('DASHBOARD_TOKEN','')
 ORIGIN=os.environ.get('DASHBOARD_ORIGIN','https://property-blue-zeta.vercel.app')
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self,*_): pass
-    def reply(self,code,value):
+    def reply(self,code,value,cookie=None):
         body=json.dumps(value,ensure_ascii=False).encode()
         self.send_response(code); self.send_header('Content-Type','application/json; charset=utf-8')
+        if cookie is not None:self.send_header('Set-Cookie',cookie)
         self.send_header('Cache-Control','no-store'); self.send_header('X-Content-Type-Options','nosniff')
         if self.headers.get('Origin')==ORIGIN:
             self.send_header('Access-Control-Allow-Origin',ORIGIN); self.send_header('Vary','Origin')
         self.end_headers(); self.wfile.write(body)
+    def session(self):
+        try:
+            cookies=SimpleCookie(self.headers.get('Cookie',''))
+            return cookies['property_session'].value if 'property_session' in cookies else ''
+        except Exception:return ''
     def auth(self):
-        if len(TOKEN)<32:
-            self.reply(503,{'error':'Server access token is not configured'}); return False
-        if not hmac.compare_digest(self.headers.get('Authorization',''), 'Bearer '+TOKEN):
-            self.reply(401,{'error':'Войдите с ключом доступа к дашборду'}); return False
+        if not admin.authenticated(self.session()):
+            self.reply(401,{'error':'Войдите с email и паролем'});return False
         return True
+    def cookie(self,token,maxage=604800):
+        return 'property_session='+token+'; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age='+str(maxage)
     def do_OPTIONS(self):
         if self.headers.get('Origin')!=ORIGIN: return self.reply(403,{'error':'Origin rejected'})
         self.send_response(204);self.send_header('Access-Control-Allow-Origin',ORIGIN)
@@ -32,6 +38,11 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Vary','Origin');self.end_headers()
     def do_GET(self):
         path=urlsplit(self.path).path
+        if path.startswith('/setup/'):
+            code=path.split('/setup/',1)[1]
+            if not admin.setup_allowed(code):return self.reply(404,{'error':'Ссылка недействительна или аккаунт уже создан'})
+            page=SETUP_PAGE.replace('__SETUP_TOKEN__',json.dumps(code)).encode()
+            self.send_response(200);self.send_header('Content-Type','text/html; charset=utf-8');self.send_header('Cache-Control','no-store');self.send_header('Referrer-Policy','no-referrer');self.end_headers();return self.wfile.write(page)
         if path=='/healthz': return self.reply(200,{'ok':True,'worker_enabled':os.environ.get('WORKER_ENABLED')=='1'})
         if path in ('/','/index.html'):
             body=(PUBLIC/'index.html').read_bytes();self.send_response(200)
@@ -50,11 +61,25 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(200,{'date':day,'timezone':'Asia/Dubai','accepted_today':accepted,'pending':pending,'limit':int(config.get('daily_limit',30)), 'messages':messages,'campaigns':campaigns,'worker_enabled':os.environ.get('WORKER_ENABLED')=='1','unread':None,'replies':None})
         except Exception: return self.reply(503,{'error':'Хранилище или интеграция не настроены'})
     def do_POST(self):
-        if not self.auth(): return
         try:
             size=int(self.headers.get('Content-Length','0'))
             if not 0<size<=1_000_000: return self.reply(413,{'error':'Invalid request size'})
             data=json.loads(self.rfile.read(size));path=urlsplit(self.path).path
+            origin=self.headers.get('Origin')
+            if origin and origin not in (ORIGIN,'https://n8n.alekperovs.com'):return self.reply(403,{'error':'Origin rejected'})
+            if path in ('/api/admin/setup','/api/admin/login'):
+                try:
+                    if path.endswith('/setup'):token=admin.setup(data.get('code',''),data.get('email',''),data.get('password',''))
+                    else:token=admin.login(data.get('email',''),data.get('password',''))
+                    return self.reply(200,{'ok':True},self.cookie(token))
+                except ValueError as e:return self.reply(400,{'error':str(e)})
+            origin=self.headers.get('Origin')
+            # Browser mutations must originate from this dashboard or its direct VPS host.
+            if origin and origin not in (ORIGIN,'https://n8n.alekperovs.com'):
+                return self.reply(403,{'error':'Origin rejected'})
+            if not self.auth():return
+            if path=='/api/admin/logout':
+                admin.logout(self.session());return self.reply(200,{'ok':True},self.cookie('',0))
             with (bridge.ROOT/'worker.lock').open('a') as lock:
                 fcntl.flock(lock,fcntl.LOCK_EX)
                 if path=='/api/campaigns':
@@ -93,6 +118,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(404,{'error':'Not found'})
         except (ValueError,KeyError,TypeError): return self.reply(400,{'error':'Проверьте запрос, получателей и состояние кампании'})
         except Exception: return self.reply(503,{'error':'Операция не выполнена; детали скрыты'})
+
+SETUP_PAGE = """<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Property Connect — Администратор</title><style>body{background:#101112;color:#eeece6;font:16px system-ui;margin:0;display:grid;min-height:100vh;place-items:center}main{max-width:430px;padding:35px;background:#191b1d;border:1px solid #343638;border-radius:12px}h1{font-size:25px}p{color:#999;line-height:1.6}input,button{font:inherit;box-sizing:border-box;width:100%;padding:13px;border-radius:7px;margin:8px 0 20px}input{background:#111;color:#eee;border:1px solid #444}button{background:#c6ad80;color:#111;border:0;cursor:pointer}</style><main><p>PROPERTY / CONNECT</p><h1>Создать администратора</h1><p>Задайте email и пароль для своей админ-панели. Эта страница работает один раз.</p><form id="form"><label>Email<input id="email" type="email" required autocomplete="username"></label><label>Пароль<input id="password" type="password" minlength="10" maxlength="200" required autocomplete="new-password"></label><label>Повторите пароль<input id="repeat" type="password" minlength="10" required autocomplete="new-password"></label><button>Создать аккаунт</button></form><p id="status"></p></main><script>const code=__SETUP_TOKEN__;const base=location.pathname.split('/setup/')[0];document.querySelector('#form').onsubmit=async e=>{e.preventDefault();const p=document.querySelector('#password').value;if(p!==document.querySelector('#repeat').value){document.querySelector('#status').textContent='Пароли не совпадают';return}const r=await fetch(base+'/api/admin/setup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code,email:document.querySelector('#email').value,password:p})});const d=await r.json();if(!r.ok){document.querySelector('#status').textContent=d.error;return}location.href=base+'/'};</script></html>"""
 
 if __name__=='__main__':
     os.umask(0o077)

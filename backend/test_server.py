@@ -3,23 +3,30 @@ from pathlib import Path
 from unittest.mock import patch
 from datetime import datetime
 sys.path.insert(0,str(Path(__file__).resolve().parent))
-import bridge,server
+import bridge,server,admin
 class ServerTests(unittest.TestCase):
  def setUp(self):
   self.temp=tempfile.TemporaryDirectory();self.old=bridge.ROOT;bridge.ROOT=Path(self.temp.name)
-  self.key='a'*40;server.TOKEN=self.key
+  self.key='a'*40;os.environ['ADMIN_SETUP_TOKEN']=self.key
   (bridge.ROOT/'secrets.json').write_text(json.dumps({'api_url':'https://api.green-api.com','instance':'123','token':'private-test-key'}))
+  self.session=admin.setup(self.key,'owner@example.com','Test-password-123456')
   self.http=server.ThreadingHTTPServer(('127.0.0.1',0),server.Handler)
   self.thread=threading.Thread(target=self.http.serve_forever,daemon=True);self.thread.start()
  def tearDown(self):
   self.http.shutdown();self.http.server_close();self.thread.join();bridge.ROOT=self.old;self.temp.cleanup()
  def request(self,path,data=None,key=None):
-  req=urllib.request.Request('http://127.0.0.1:'+str(self.http.server_port)+path,data=json.dumps(data).encode() if data is not None else None,headers={'Authorization':'Bearer '+(key or self.key),'Content-Type':'application/json'})
+  req=urllib.request.Request('http://127.0.0.1:'+str(self.http.server_port)+path,data=json.dumps(data).encode() if data is not None else None,headers={'Cookie':'property_session='+(key or self.session),'Content-Type':'application/json'})
   try:
    with urllib.request.urlopen(req) as r:return r.status,json.load(r)
   except urllib.error.HTTPError as e:return e.code,json.load(e)
  def draft(self):
   return self.request('/api/campaigns',{'id':'test','text':'Hello {name}','contacts':[{'phone':'+971501234567','name':'Anna'}],'daily':1,'days':1})
+ def test_email_password_login_and_logout(self):
+  code,data=self.request('/api/admin/login',{'email':'owner@example.com','password':'wrong'});self.assertEqual(code,400)
+  self.assertEqual(self.request('/api/admin/login',{'email':'owner@example.com','password':'Test-password-123456'})[0],200)
+  self.assertEqual(self.request('/api/admin/setup',{'code':self.key,'email':'attacker@example.com','password':'DifferentPassword123'})[0],400)
+  self.assertEqual(self.request('/api/admin/logout',{})[0],200)
+  self.assertEqual(self.request('/api/status')[0],401)
  def test_auth_and_no_secret_exposure(self):
   self.assertEqual(self.request('/api/status',key='wrong')[0],401)
   code,data=self.request('/api/status');self.assertEqual(code,200)

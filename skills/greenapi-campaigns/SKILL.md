@@ -3,7 +3,7 @@ name: greenapi-campaigns
 description: Manage the Property Connect GREEN-API WhatsApp queue through Codex, importing Excel or CSV contacts, reviewing personalized messages, scheduling campaigns and reporting actual sending results.
 ---
 
-Use the repository's `backend/bridge.py` and authenticated `backend/server.py` API. Set `GREENAPI_DATA_DIR` to the persistent private queue directory; default location next to the bridge is only for local development. Read the repository README before deployment or migration.
+Use the repository's `backend/bridge.py` and email/password-authenticated `backend/server.py` API. Set `GREENAPI_DATA_DIR` to the persistent private queue directory; default location next to the bridge is only for local development. Read the repository README before deployment or migration.
 
 Create a draft from the user's actual contact file and text. Inspect the full preview before activation. Activate only the specified campaign, recipients and text authorized by the user; general setup does not authorize contacting clients. Existing accepted messages must not be recreated for retries. On VPS operate on the single server queue; do not start a second local queue for the same account.
 
