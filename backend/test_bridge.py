@@ -43,6 +43,25 @@ class Tests(unittest.TestCase):
    self.assertEqual(b.tick()['state'],'idle')
   with patch.object(b,'config',return_value={}),patch.object(b,'now',return_value=datetime(2026,11,9,12,tzinfo=b.TZ)):
    self.assertEqual(b.tick()['state'],'idle')
+ def assert_cohort_limit(self,group,cap):
+  self.activate()
+  with b.db() as d:
+   d.execute("INSERT INTO campaigns(id,state,daily,start,end,audience) VALUES('history','paused',30,'2026-10-09','2026-10-10',?)",(group,))
+   for i in range(cap):d.execute("INSERT INTO messages(campaign,phone,name,body,state,attempted) VALUES('history',?,'Used','Used','accepted','2026-10-09T09:00:00+04:00')",(str(971500000000+i),))
+   d.execute("INSERT INTO campaigns(id,state,daily,start,end,audience) VALUES('new','active',15,'2026-10-09','2026-10-10','new')")
+   d.execute("INSERT INTO messages(campaign,phone,name,body) VALUES('new','971509999999','New','New greeting')")
+  with patch.object(b,'config',return_value={'daily_limit':45}),patch.object(b,'now',return_value=datetime(2026,10,9,12,tzinfo=b.TZ)),patch.object(b,'api',side_effect=[{'stateInstance':'authorized'},{'idMessage':'quota-test'}]) as api:
+   self.assertEqual(b.tick()['state'],'accepted')
+   expected='971509999999@c.us' if group=='existing' else '971501234567@c.us'
+   self.assertEqual(api.call_args.args[1]['chatId'],expected)
+ def test_existing_quota_shared_across_campaigns(self):self.assert_cohort_limit('existing',30)
+ def test_new_quota_does_not_block_existing(self):self.assert_cohort_limit('new',15)
+ def test_legacy_campaign_migrates_to_existing(self):
+  import sqlite3
+  with sqlite3.connect(b.ROOT/'queue.sqlite') as d:
+   d.execute('CREATE TABLE campaigns(id TEXT PRIMARY KEY,state TEXT,daily INTEGER,start TEXT,end TEXT)')
+   d.execute("INSERT INTO campaigns VALUES('legacy','paused',1,'2026-10-09','2026-10-09')")
+  with b.db() as d:self.assertEqual(d.execute("SELECT audience FROM campaigns WHERE id='legacy'").fetchone()[0],'existing')
  def test_xlsx(self):
   p=b.ROOT/'test.xlsx'
   with zipfile.ZipFile(p,'w') as z:

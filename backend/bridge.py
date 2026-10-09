@@ -46,6 +46,12 @@ def db():
     CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY, campaign TEXT, phone TEXT, name TEXT, body TEXT, state TEXT DEFAULT 'pending', attempted TEXT, provider_id TEXT, UNIQUE(campaign,phone));
     CREATE TABLE IF NOT EXISTS blocked(phone TEXT PRIMARY KEY);
     ''')
+    if 'audience' not in {r[1] for r in d.execute('PRAGMA table_info(campaigns)')}:
+        try:
+            d.execute("ALTER TABLE campaigns ADD COLUMN audience TEXT NOT NULL DEFAULT 'existing'")
+            d.commit()
+        except sqlite3.OperationalError:
+            if 'audience' not in {r[1] for r in d.execute('PRAGMA table_info(campaigns)')}:raise
     return d
 
 def phone(value):
@@ -106,7 +112,10 @@ def check_duplicate(d,number,body):
     if d.execute('SELECT 1 FROM blocked WHERE phone=?',(number,)).fetchone():raise ValueError('Контакт исключён из рассылок')
 
 def create(args):
-    if not 1<=args.daily<=30 or not 1<=args.days<=366: raise ValueError('daily: 1–30; days: 1–366')
+    audience=getattr(args,'audience','existing')
+    if audience not in ('existing','new'):raise ValueError('Выберите старых или новых клиентов')
+    cap=30 if audience=='existing' else 15
+    if not 1<=args.daily<=cap or not 1<=args.days<=366: raise ValueError('Дневной лимит группы превышен')
     start=datetime.fromisoformat(args.start).date() if args.start else now().date()
     template=Path(args.text).read_text(encoding='utf-8')
     batch={}
@@ -123,15 +132,15 @@ def create(args):
     d=db()
     with d:
         for p,(n,b) in batch.items():check_duplicate(d,p,b)
-        d.execute('INSERT INTO campaigns VALUES(?,?,?,?,?)',(args.id,'draft',args.daily,str(start),str(start+timedelta(days=args.days-1))))
+        d.execute('INSERT INTO campaigns(id,state,daily,start,end,audience) VALUES(?,?,?,?,?,?)',(args.id,'draft',args.daily,str(start),str(start+timedelta(days=args.days-1)),audience))
         d.executemany('INSERT INTO messages(campaign,phone,name,body) VALUES(?,?,?,?)',[(args.id,p,n,b) for p,(n,b) in batch.items()])
     return {'campaign':args.id,'contacts':len(batch),'capacity':args.daily*args.days,'state':'draft','preview':[(p,n,b) for p,(n,b) in list(batch.items())[:3]]}
 
 def tick(campaign=None, immediate=False):
     c=config(); d=db(); t=now(); day=t.date().isoformat()
     # Global account cap and minimum spacing, including uncertain attempts.
-    limit=int(c.get('daily_limit',30))
-    if not 1<=limit<=30: raise ValueError('daily_limit must be 1–30')
+    limit=int(c.get('daily_limit',45))
+    if not 1<=limit<=45: raise ValueError('daily_limit must be 1–45')
     if not immediate and not 9<=t.hour<18: return {'state':'outside_window'}
     count=d.execute('SELECT count(*) FROM messages WHERE substr(attempted,1,10)=?',(day,)).fetchone()[0]
     if count>=limit: return {'state':'daily_limit'}
@@ -142,7 +151,10 @@ def tick(campaign=None, immediate=False):
     AND m.phone NOT IN (SELECT phone FROM blocked)
     AND NOT EXISTS(SELECT 1 FROM messages today WHERE today.phone=m.phone AND substr(today.attempted,1,10)=?)
     AND (SELECT count(*) FROM messages x WHERE x.campaign=c.id AND substr(x.attempted,1,10)=?)<c.daily
-    ORDER BY m.id LIMIT 1''',(campaign,campaign,day,day,day,day)).fetchone()
+    AND (SELECT count(*) FROM messages x JOIN campaigns other ON other.id=x.campaign
+         WHERE other.audience=c.audience AND substr(x.attempted,1,10)=?)
+         < CASE c.audience WHEN 'new' THEN 15 ELSE 30 END
+    ORDER BY m.id LIMIT 1''',(campaign,campaign,day,day,day,day,day)).fetchone()
     if not row: return {'state':'idle'}
     # A crash must pause the entire campaign, not just skip the uncertain contact.
     if d.execute("SELECT 1 FROM messages WHERE campaign=? AND state='uncertain'",(row['campaign'],)).fetchone():
@@ -176,13 +188,13 @@ def main():
     sub.add_parser('configure'); sub.add_parser('check'); sub.add_parser('tick'); sub.add_parser('status')
     c=sub.add_parser('create')
     for key in ('id','file','text'): c.add_argument('--'+key,required=True)
-    c.add_argument('--daily',type=int,default=30); c.add_argument('--days',type=int,default=7); c.add_argument('--start')
+    c.add_argument('--daily',type=int,default=30); c.add_argument('--days',type=int,default=7); c.add_argument('--start'); c.add_argument('--audience',choices=['existing','new'],default='existing')
     for cmd in ('activate','pause','preview'):
         s=sub.add_parser(cmd); s.add_argument('id')
     s=sub.add_parser('block'); s.add_argument('phone')
     a=p.parse_args()
     if a.cmd=='configure':
-        c={'api_url':input('apiUrl: ').strip(),'instance':input('idInstance: ').strip(),'token':getpass.getpass('apiTokenInstance (hidden): '),'daily_limit':30,'interval_seconds':600}
+        c={'api_url':input('apiUrl: ').strip(),'instance':input('idInstance: ').strip(),'token':getpass.getpass('apiTokenInstance (hidden): '),'daily_limit':45,'interval_seconds':600}
         (ROOT/'secrets.json').write_text(json.dumps(c)); os.chmod(ROOT/'secrets.json',0o600)
         config(); out={'configured':True}
     elif a.cmd=='check': out=api('getStateInstance')

@@ -43,6 +43,6 @@ def draft(data):
     if bridge.now().hour>=18:day+=timedelta(days=1)
     with bridge.db() as d:
         for phone,name,body in batch:bridge.check_duplicate(d,phone,body)
-        d.execute('INSERT INTO campaigns VALUES(?,?,?,?,?)',(cid,'draft',30,str(day),str(day+timedelta(days=6))))
+        d.execute('INSERT INTO campaigns(id,state,daily,start,end) VALUES(?,?,?,?,?)',(cid,'draft',30,str(day),str(day+timedelta(days=6))))
         d.executemany('INSERT INTO messages(campaign,phone,name,body) VALUES(?,?,?,?)',[(cid,*b) for b in batch])
     return {'campaign':cid,'state':'draft','contacts':len(batch)}
