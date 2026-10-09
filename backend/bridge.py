@@ -13,8 +13,9 @@ ROOT.mkdir(parents=True, exist_ok=True)
 TZ = ZoneInfo('Asia/Dubai')
 
 def now(): return datetime.now(TZ)
-def config():
-    c = json.loads((ROOT/'secrets.json').read_text())
+def config(account='primary'):
+    if account not in ('primary','second'):raise ValueError('Unknown WhatsApp account')
+    c = json.loads((ROOT/('secrets.json' if account=='primary' else 'second-secrets.json')).read_text())
     u = urlparse(c['api_url'])
     if u.scheme != 'https' or not re.fullmatch(r'(?:[a-z0-9-]+\.)*(?:green-api|greenapi)\.com', u.hostname or '') or u.path not in ('', '/') or u.query or u.username or u.port:
         raise ValueError('api_url must be an HTTPS GREEN-API host without path')
@@ -25,8 +26,8 @@ def config():
 class NoRedirect(HTTPRedirectHandler):
     def redirect_request(self, *args, **kwargs): return None
 
-def api(method, data=None):
-    c = config()
+def api(method, data=None, account='primary'):
+    c = config(account)
     url = f"{c['api_url'].rstrip('/')}/waInstance{c['instance']}/{method}/{c['token']}"
     req = Request(url, data=None if data is None else json.dumps(data).encode(), headers={'Content-Type':'application/json'})
     try:
@@ -52,7 +53,25 @@ def db():
             d.commit()
         except sqlite3.OperationalError:
             if 'audience' not in {r[1] for r in d.execute('PRAGMA table_info(campaigns)')}:raise
+    if 'account' not in {r[1] for r in d.execute('PRAGMA table_info(campaigns)')}:
+        try:
+            d.execute("ALTER TABLE campaigns ADD COLUMN account TEXT NOT NULL DEFAULT 'primary'")
+            d.commit()
+        except sqlite3.OperationalError:
+            if 'account' not in {r[1] for r in d.execute('PRAGMA table_info(campaigns)')}:raise
     return d
+
+def account_limits(account):
+    if account not in ('primary','second'):raise ValueError('Unknown WhatsApp account')
+    return {'existing':30 if account=='primary' else 0,'new':15}
+
+def account_summaries(d,day):
+    result=[]
+    for account,number in [('primary','971585698463'),('second','971582532610')]:
+        configured=account=='primary' or (ROOT/'second-secrets.json').is_file()
+        counts={r['audience']:r['n'] for r in d.execute('SELECT c.audience,count(*) n FROM messages m JOIN campaigns c ON c.id=m.campaign WHERE c.account=? AND substr(m.attempted,1,10)=? GROUP BY c.audience',(account,day))}
+        result.append({'id':account,'phone':number,'configured':configured,'limit':45 if account=='primary' else 15,'audiences':{k:{'limit':v,'attempted_today':counts.get(k,0)} for k,v in account_limits(account).items()}})
+    return result
 
 def phone(value):
     s = str(value).strip()
@@ -114,7 +133,9 @@ def check_duplicate(d,number,body):
 def create(args):
     audience=getattr(args,'audience','existing')
     if audience not in ('existing','new'):raise ValueError('Выберите старых или новых клиентов')
-    cap=30 if audience=='existing' else 15
+    account=getattr(args,'account','primary')
+    cap=account_limits(account)[audience]
+    if account=='second' and not (ROOT/'second-secrets.json').is_file():raise ValueError('Second WhatsApp is not configured')
     if not 1<=args.daily<=cap or not 1<=args.days<=366: raise ValueError('Дневной лимит группы превышен')
     start=datetime.fromisoformat(args.start).date() if args.start else now().date()
     template=Path(args.text).read_text(encoding='utf-8')
@@ -132,29 +153,40 @@ def create(args):
     d=db()
     with d:
         for p,(n,b) in batch.items():check_duplicate(d,p,b)
-        d.execute('INSERT INTO campaigns(id,state,daily,start,end,audience) VALUES(?,?,?,?,?,?)',(args.id,'draft',args.daily,str(start),str(start+timedelta(days=args.days-1)),audience))
+        d.execute('INSERT INTO campaigns(id,state,daily,start,end,audience,account) VALUES(?,?,?,?,?,?,?)',(args.id,'draft',args.daily,str(start),str(start+timedelta(days=args.days-1)),audience,account))
         d.executemany('INSERT INTO messages(campaign,phone,name,body) VALUES(?,?,?,?)',[(args.id,p,n,b) for p,(n,b) in batch.items()])
     return {'campaign':args.id,'contacts':len(batch),'capacity':args.daily*args.days,'state':'draft','preview':[(p,n,b) for p,(n,b) in list(batch.items())[:3]]}
 
 def tick(campaign=None, immediate=False):
-    c=config(); d=db(); t=now(); day=t.date().isoformat()
+    result=_tick_account(campaign,immediate,'primary')
+    if result.get('state') in ('idle','interval','daily_limit','instance_not_authorized') and (ROOT/'second-secrets.json').is_file():
+        second=_tick_account(campaign,immediate,'second')
+        if second.get('state')!='idle':return second
+    return result
+
+def _tick_account(campaign,immediate,account):
+    c=config() if account=='primary' else config(account); d=db(); t=now(); day=t.date().isoformat()
     # Global account cap and minimum spacing, including uncertain attempts.
-    limit=int(c.get('daily_limit',45))
+    limit=min(int(c.get('daily_limit',45 if account=='primary' else 15)),45 if account=='primary' else 15)
     if not 1<=limit<=45: raise ValueError('daily_limit must be 1–45')
     if not immediate and not 9<=t.hour<18: return {'state':'outside_window'}
-    count=d.execute('SELECT count(*) FROM messages WHERE substr(attempted,1,10)=?',(day,)).fetchone()[0]
+    count=d.execute('SELECT count(*) FROM messages m JOIN campaigns c ON c.id=m.campaign WHERE c.account=? AND substr(m.attempted,1,10)=?',(account,day)).fetchone()[0]
     if count>=limit: return {'state':'daily_limit'}
-    last=d.execute('SELECT max(attempted) FROM messages').fetchone()[0]
-    if last and (t-datetime.fromisoformat(last)).total_seconds()<max(60,int(c.get('interval_seconds',600))): return {'state':'interval'}
+    last=d.execute('SELECT max(m.attempted) FROM messages m JOIN campaigns c ON c.id=m.campaign WHERE c.account=?',(account,)).fetchone()[0]
+    if last and (t-datetime.fromisoformat(last)).total_seconds()<max(600,int(c.get('interval_seconds',600))): return {'state':'interval'}
+    uncertain=d.execute("SELECT c.id FROM campaigns c JOIN messages m ON m.campaign=c.id WHERE c.account=? AND c.state='active' AND m.state='uncertain' LIMIT 1",(account,)).fetchone()
+    if uncertain:
+        with d:d.execute("UPDATE campaigns SET state='paused' WHERE id=?",(uncertain['id'],))
+        return {'state':'uncertain_campaign_paused'}
     row=d.execute('''SELECT m.* FROM messages m JOIN campaigns c ON c.id=m.campaign
-    WHERE (? IS NULL OR c.id=?) AND c.state='active' AND c.start<=? AND c.end>=? AND m.state='pending'
+    WHERE c.account=? AND (? IS NULL OR c.id=?) AND c.state='active' AND c.start<=? AND c.end>=? AND m.state='pending'
     AND m.phone NOT IN (SELECT phone FROM blocked)
     AND NOT EXISTS(SELECT 1 FROM messages today WHERE today.phone=m.phone AND substr(today.attempted,1,10)=?)
     AND (SELECT count(*) FROM messages x WHERE x.campaign=c.id AND substr(x.attempted,1,10)=?)<c.daily
     AND (SELECT count(*) FROM messages x JOIN campaigns other ON other.id=x.campaign
-         WHERE other.audience=c.audience AND substr(x.attempted,1,10)=?)
-         < CASE c.audience WHEN 'new' THEN 15 ELSE 30 END
-    ORDER BY m.id LIMIT 1''',(campaign,campaign,day,day,day,day,day)).fetchone()
+         WHERE other.account=c.account AND other.audience=c.audience AND substr(x.attempted,1,10)=?)
+         < CASE WHEN c.audience='new' THEN 15 WHEN c.account='primary' THEN 30 ELSE 0 END
+    ORDER BY m.id LIMIT 1''',(account,campaign,campaign,day,day,day,day,day)).fetchone()
     if not row: return {'state':'idle'}
     # A crash must pause the entire campaign, not just skip the uncertain contact.
     if d.execute("SELECT 1 FROM messages WHERE campaign=? AND state='uncertain'",(row['campaign'],)).fetchone():
@@ -168,13 +200,13 @@ def tick(campaign=None, immediate=False):
         return {'state':'duplicate_campaign_paused'}
     if d.execute("SELECT 1 FROM messages WHERE phone=? AND substr(attempted,1,10)=?",(row['phone'],day)).fetchone():
         return {'state':'contact_already_attempted_today'}
-    if api('getStateInstance').get('stateInstance')!='authorized': return {'state':'instance_not_authorized'}
+    if api('getStateInstance',account=account).get('stateInstance')!='authorized': return {'state':'instance_not_authorized'}
     # Commit before network. Crash/timeout remains uncertain and is never auto-retried.
     with d:
         updated=d.execute("UPDATE messages SET state='uncertain',attempted=? WHERE id=? AND state='pending' AND EXISTS(SELECT 1 FROM campaigns WHERE id=? AND state='active') AND phone NOT IN (SELECT phone FROM blocked)",(t.isoformat(),row['id'],row['campaign']))
         if updated.rowcount!=1: return {'state':'cancelled_before_send'}
     try:
-        result=api('sendMessage',{'chatId':row['phone']+'@c.us','message':row['body']})
+        result=api('sendMessage',{'chatId':row['phone']+'@c.us','message':row['body']},account=account)
         if not result.get('idMessage'): raise RuntimeError('Missing message identifier')
         with d: d.execute("UPDATE messages SET state='accepted',provider_id=? WHERE id=?",(result['idMessage'],row['id']))
         return {'state':'accepted','message':row['id'],'provider_id':result['idMessage']}
@@ -188,7 +220,7 @@ def main():
     sub.add_parser('configure'); sub.add_parser('check'); sub.add_parser('tick'); sub.add_parser('status')
     c=sub.add_parser('create')
     for key in ('id','file','text'): c.add_argument('--'+key,required=True)
-    c.add_argument('--daily',type=int,default=30); c.add_argument('--days',type=int,default=7); c.add_argument('--start'); c.add_argument('--audience',choices=['existing','new'],default='existing')
+    c.add_argument('--daily',type=int,default=30); c.add_argument('--days',type=int,default=7); c.add_argument('--start'); c.add_argument('--audience',choices=['existing','new'],default='existing'); c.add_argument('--account',choices=['primary','second'],default='primary')
     for cmd in ('activate','pause','preview'):
         s=sub.add_parser(cmd); s.add_argument('id')
     s=sub.add_parser('block'); s.add_argument('phone')

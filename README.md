@@ -40,3 +40,10 @@ GET /api/status — журнал и кампании. POST /api/campaigns — ч
 
 ## Follow-up
 Защищённый экран: https://n8n.alekperovs.com/property/followups.html. Доступ только с cookie-сессией администратора. Клиентский HTML расположен в /opt/property-connect/data/followups.html и не публикуется в Git. Публичный followups.html содержит только переход на защищённую страницу. Изменения и черновики этого экрана сохраняются в браузере; отправка доступна отдельно через журнал и создание кампании. Общий лимит очереди 30 попыток в сутки, интервал 10 минут. Входящие ответы пока проверяются в WhatsApp.
+
+
+## Two WhatsApp accounts
+
+Campaigns select `account=primary|second` (default primary). Primary permits 30 existing + 15 new contacts per Dubai day; second permits 15 new and no existing contacts. Both use one VPS worker, 09:00–18:00 Dubai, with at least 600 seconds between attempts per account. Phone/day and message deduplication span both accounts. Accepted and uncertain attempts consume limits and are never retried automatically.
+
+Keep second-account credentials in private `/data/second-secrets.json` using the same schema as `/data/secrets.json`, owned by container user 10001 with mode 600. Never commit credentials. Back up SQLite before migrations. Account routing applies to sends and provider status lookups. Draft creation does not authorize activation.

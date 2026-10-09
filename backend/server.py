@@ -86,8 +86,9 @@ class Handler(BaseHTTPRequestHandler):
                 pending=d.execute("SELECT count(*) FROM messages WHERE state='pending'").fetchone()[0]
             with bridge.db() as d:
                 cohort_counts={r['audience']:r['n'] for r in d.execute('SELECT c.audience,count(*) AS n FROM messages m JOIN campaigns c ON c.id=m.campaign WHERE substr(m.attempted,1,10)=? GROUP BY c.audience',(day,))}
+            with bridge.db() as d:accounts=bridge.account_summaries(d,day)
             config=bridge.config()
-            return self.reply(200,{'date':day,'timezone':'Asia/Dubai','accepted_today':accepted,'pending':pending,'limit':int(config.get('daily_limit',45)), 'messages':messages,'campaigns':campaigns,'worker_enabled':os.environ.get('WORKER_ENABLED')=='1','unread':None,'replies':None,'audiences':{'existing':{'limit':30,'attempted_today':cohort_counts.get('existing',0)},'new':{'limit':15,'attempted_today':cohort_counts.get('new',0)}}})
+            return self.reply(200,{'date':day,'timezone':'Asia/Dubai','accepted_today':accepted,'pending':pending,'limit':sum(a['limit'] for a in accounts if a['configured']), 'accounts':accounts, 'messages':messages,'campaigns':campaigns,'worker_enabled':os.environ.get('WORKER_ENABLED')=='1','unread':None,'replies':None,'audiences':{'existing':{'limit':30,'attempted_today':cohort_counts.get('existing',0)},'new':{'limit':sum(a['audiences']['new']['limit'] for a in accounts if a['configured']),'attempted_today':cohort_counts.get('new',0)}}})
         except Exception: return self.reply(503,{'error':'Хранилище или интеграция не настроены'})
     def do_POST(self):
         try:
@@ -123,7 +124,7 @@ class Handler(BaseHTTPRequestHandler):
                             writer=csv.DictWriter(f,fieldnames=['phone','name']);writer.writeheader()
                             for c in contacts:writer.writerow({'phone':c['phone'],'name':c.get('name','')})
                         (p/'text.txt').write_text(data['text'])
-                        args=types.SimpleNamespace(id=data['id'],file=str(p/'contacts.csv'),text=str(p/'text.txt'),daily=int(data.get('daily',30)),days=int(data.get('days',7)),start=data.get('start'),audience=data.get('audience','existing'))
+                        args=types.SimpleNamespace(id=data['id'],file=str(p/'contacts.csv'),text=str(p/'text.txt'),daily=int(data.get('daily',30)),days=int(data.get('days',7)),start=data.get('start'),audience=data.get('audience','existing'),account=data.get('account','primary'))
                         result=bridge.create(args)
                         # Return the complete preview; activation is a separate explicit request.
                         with bridge.db() as d: result['preview']=[dict(r) for r in d.execute('SELECT name,phone,body,state FROM messages WHERE campaign=?',(args.id,))]
@@ -142,9 +143,9 @@ class Handler(BaseHTTPRequestHandler):
                     with bridge.db() as d: d.execute("UPDATE campaigns SET state='paused' WHERE state='active'")
                     return self.reply(200,{'paused':True})
                 if path=='/api/message-status':
-                    with bridge.db() as d: row=d.execute('SELECT phone,provider_id FROM messages WHERE id=?',(int(data['id']),)).fetchone()
+                    with bridge.db() as d: row=d.execute('SELECT m.phone,m.provider_id,c.account FROM messages m JOIN campaigns c ON c.id=m.campaign WHERE m.id=?',(int(data['id']),)).fetchone()
                     if not row or not row['provider_id']: raise ValueError('Нет идентификатора отправленного сообщения')
-                    result=bridge.api('getMessage',{'chatId':row['phone']+'@c.us','idMessage':row['provider_id']})
+                    result=bridge.api('getMessage',{'chatId':row['phone']+'@c.us','idMessage':row['provider_id']},account=row['account'])
                     return self.reply(200,{'id':data['id'],'provider_status':result.get('statusMessage','unknown')})
             return self.reply(404,{'error':'Not found'})
         except (ValueError,KeyError,TypeError): return self.reply(400,{'error':'Проверьте запрос, получателей и состояние кампании'})
