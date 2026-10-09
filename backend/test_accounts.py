@@ -29,3 +29,15 @@ class AccountTests(Tests):
  def test_second_cannot_create_existing(self):
   self.args.account='second';self.args.audience='existing';(b.ROOT/'second-secrets.json').write_text('{}')
   with self.assertRaises(ValueError):b.create(self.args)
+
+ def test_readiness_excludes_drafts_and_other_dates(self):
+  self.activate();self.second()
+  with b.db() as d:
+   d.execute("UPDATE campaigns SET state='draft' WHERE account='second'")
+   accounts=b.account_summaries(d,'2026-10-09')
+  self.assertEqual(accounts[0]['audiences']['existing']['scheduled'],2)
+  self.assertEqual(accounts[1]['audiences']['new']['scheduled'],0)
+  self.assertEqual(accounts[1]['audiences']['new']['draft'],1)
+  self.assertEqual(accounts[1]['audiences']['new']['unfilled'],15)
+  with b.db() as d:accounts=b.account_summaries(d,'2026-11-10')
+  self.assertEqual(accounts[0]['audiences']['existing']['scheduled'],0)

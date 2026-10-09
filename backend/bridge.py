@@ -70,7 +70,9 @@ def account_summaries(d,day):
     for account,number in [('primary','971585698463'),('second','971582532610')]:
         configured=account=='primary' or (ROOT/'second-secrets.json').is_file()
         counts={r['audience']:r['n'] for r in d.execute('SELECT c.audience,count(*) n FROM messages m JOIN campaigns c ON c.id=m.campaign WHERE c.account=? AND substr(m.attempted,1,10)=? GROUP BY c.audience',(account,day))}
-        result.append({'id':account,'phone':number,'configured':configured,'limit':45 if account=='primary' else 15,'audiences':{k:{'limit':v,'attempted_today':counts.get(k,0)} for k,v in account_limits(account).items()}})
+        ready={r['audience']:r['n'] for r in d.execute("SELECT c.audience,count(*) n FROM messages m JOIN campaigns c ON c.id=m.campaign WHERE c.account=? AND c.state='active' AND c.start<=? AND c.end>=? AND m.state='pending' GROUP BY c.audience",(account,day,day))}
+        drafts={r['audience']:r['n'] for r in d.execute("SELECT c.audience,count(*) n FROM messages m JOIN campaigns c ON c.id=m.campaign WHERE c.account=? AND c.state='draft' AND c.start<=? AND c.end>=? AND m.state='pending' GROUP BY c.audience",(account,day,day))}
+        result.append({'id':account,'phone':number,'configured':configured,'limit':45 if account=='primary' else 15,'audiences':{k:{'limit':v,'attempted_today':counts.get(k,0),'scheduled':ready.get(k,0),'draft':drafts.get(k,0),'unfilled':max(0,v-counts.get(k,0)-ready.get(k,0))} for k,v in account_limits(account).items()}})
     return result
 
 def phone(value):
