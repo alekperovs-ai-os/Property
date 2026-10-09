@@ -48,6 +48,20 @@ class Handler(BaseHTTPRequestHandler):
             body=(PUBLIC/'index.html').read_bytes();self.send_response(200)
             self.send_header('Content-Type','text/html; charset=utf-8');self.send_header('Cache-Control','no-store')
             self.end_headers();return self.wfile.write(body)
+        if path=='/followups.html':
+            if not admin.authenticated(self.session()):
+                self.send_response(303)
+                self.send_header('Location','index.html?next=followups')
+                self.send_header('Cache-Control','no-store')
+                self.end_headers();return
+            page=bridge.ROOT/'followups.html'
+            if not page.is_file():return self.reply(404,{'error':'Экран ещё не опубликован'})
+            body=page.read_bytes();self.send_response(200)
+            self.send_header('Content-Type','text/html; charset=utf-8')
+            self.send_header('Cache-Control','no-store')
+            self.send_header('X-Content-Type-Options','nosniff')
+            self.send_header('Referrer-Policy','same-origin')
+            self.end_headers();return self.wfile.write(body)
         if path=='/api/campaign-preview':
             if not self.auth():return
             campaign=parse_qs(urlsplit(self.path).query).get('id',[''])[0]

@@ -37,3 +37,6 @@ GET /api/status — журнал и кампании. POST /api/campaigns — ч
 
 ## Размещение
 Исходный код — GitHub alekperovs-ai-os/Property, main. Сайт — https://property-blue-zeta.vercel.app. Приложение на VPS — /opt/property-connect; приватные данные — /opt/property-connect/data. GREEN-API ключ — data/secrets.json; журнал — data/queue.sqlite; аккаунт и сессии — data/admin.sqlite. Ни один из этих файлов не входит в GitHub.
+
+## Follow-up
+Защищённый экран: https://n8n.alekperovs.com/property/followups.html. Доступ только с cookie-сессией администратора. Клиентский HTML расположен в /opt/property-connect/data/followups.html и не публикуется в Git. Публичный followups.html содержит только переход на защищённую страницу. Изменения и черновики этого экрана сохраняются в браузере; отправка доступна отдельно через журнал и создание кампании. Общий лимит очереди 30 попыток в сутки, интервал 10 минут. Входящие ответы пока проверяются в WhatsApp.

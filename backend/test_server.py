@@ -46,6 +46,17 @@ class ServerTests(unittest.TestCase):
   self.assertEqual(self.request('/api/campaign-state',{'id':'test','state':'active','confirm':True})[0],400)
   with patch.object(bridge,'now',return_value=datetime(2026,10,9,12,tzinfo=bridge.TZ)),patch.object(bridge,'api') as api:
    self.assertEqual(bridge.tick()['state'],'uncertain_campaign_paused');api.assert_not_called()
+ def test_private_followups_require_session(self):
+  (bridge.ROOT/'followups.html').write_text('<html>private-client-test</html>')
+  base='http://127.0.0.1:'+str(self.http.server_port)
+  with urllib.request.urlopen(base+'/followups.html') as r:
+   self.assertNotIn('private-client-test',r.read().decode())
+   self.assertTrue(r.url.endswith('index.html?next=followups'))
+  req=urllib.request.Request(base+'/followups.html',headers={'Cookie':'property_session='+self.session})
+  with urllib.request.urlopen(req) as r:
+   self.assertEqual(r.status,200)
+   self.assertEqual(r.headers['Cache-Control'],'no-store')
+   self.assertIn('private-client-test',r.read().decode())
  def test_duplicate_campaign_does_not_duplicate_messages(self):
   self.draft();self.assertEqual(self.draft()[0],503)
   self.assertEqual(len(self.request('/api/status')[1]['messages']),1)
